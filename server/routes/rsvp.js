@@ -10,6 +10,17 @@ router.post('/:eventId', auth, async (req, res) => {
   try {
     const { eventId } = req.params;
     const userId = req.user.id;
+    
+    // Validate UUIDs
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(eventId)) {
+      return res.status(400).json({ message: 'Invalid event ID format' });
+    }
+    if (!uuidRegex.test(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID format' });
+    }
+    
+    console.log('RSVP request:', { eventId, userId });
 
     // Find event
     const { data: event, error: eventError } = await supabase
@@ -60,48 +71,87 @@ router.post('/:eventId', auth, async (req, res) => {
     }
 
     // Add RSVP (atomic operation - unique constraint prevents duplicates)
-    const { data: rsvp, error: rsvpError } = await supabase
+    console.log('Attempting to insert RSVP:', { user_id: userId, event_id: eventId });
+    
+    // First try insert without select to see if it works
+    const { error: insertError } = await supabase
       .from('rsvps')
       .insert({
         user_id: userId,
         event_id: eventId
-      })
-      .select()
-      .single();
+      });
 
-    if (rsvpError) {
-      console.error('RSVP insert error:', rsvpError);
-      console.error('Error details:', JSON.stringify(rsvpError, null, 2));
+    if (insertError) {
+      console.error('RSVP insert error:', insertError);
+      console.error('Error details:', JSON.stringify(insertError, null, 2));
+      console.error('Error code:', insertError.code);
+      console.error('Error message:', insertError.message);
       // Check if it's a duplicate error
-      if (rsvpError.code === '23505') {
+      if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
         return res.status(400).json({ message: 'You have already RSVP\'d to this event' });
       }
       return res.status(500).json({ 
         message: 'Server error creating RSVP',
-        error: rsvpError.message,
-        code: rsvpError.code,
-        details: rsvpError.details,
-        hint: rsvpError.hint
+        error: insertError.message,
+        code: insertError.code,
+        details: insertError.details,
+        hint: insertError.hint
       });
     }
+    
+    console.log('RSVP inserted successfully, fetching data...');
+    
+    // Now fetch the inserted RSVP
+    const { data: rsvp, error: fetchError } = await supabase
+      .from('rsvps')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('event_id', eventId)
+      .single();
+    
+    if (fetchError) {
+      console.error('Error fetching RSVP after insert:', fetchError);
+      // Don't fail the request if insert succeeded but fetch failed
+    } else {
+      console.log('RSVP created successfully:', rsvp);
+    }
 
-    // Fetch updated event with attendees
+    // Fetch updated event
     const { data: updatedEvent } = await supabase
       .from('events')
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .eq('id', eventId)
       .single();
 
+    // Fetch creator info
+    if (updatedEvent?.creator_id) {
+      const { data: creator } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .eq('id', updatedEvent.creator_id)
+        .single();
+      updatedEvent.creator = creator;
+    }
+
+    // Fetch attendees
     const { data: rsvps } = await supabase
       .from('rsvps')
-      .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+      .select('user_id')
       .eq('event_id', eventId);
 
-    updatedEvent.attendees = rsvps?.map(r => r.users) || [];
-    updatedEvent.attendeesCount = updatedEvent.attendees.length;
+    // Get user details for attendees
+    const userIds = rsvps?.map(r => r.user_id) || [];
+    let attendees = [];
+    if (userIds.length > 0) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .in('id', userIds);
+      attendees = users || [];
+    }
+
+    updatedEvent.attendees = attendees;
+    updatedEvent.attendeesCount = attendees.length;
 
     res.json({ 
       message: 'Successfully RSVP\'d to event',
@@ -148,20 +198,39 @@ router.delete('/:eventId', auth, async (req, res) => {
     // Fetch updated event
     const { data: updatedEvent } = await supabase
       .from('events')
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .eq('id', eventId)
       .single();
 
+    // Fetch creator info
+    if (updatedEvent?.creator_id) {
+      const { data: creator } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .eq('id', updatedEvent.creator_id)
+        .single();
+      updatedEvent.creator = creator;
+    }
+
+    // Fetch attendees
     const { data: rsvps } = await supabase
       .from('rsvps')
-      .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+      .select('user_id')
       .eq('event_id', eventId);
 
-    updatedEvent.attendees = rsvps?.map(r => r.users) || [];
-    updatedEvent.attendeesCount = updatedEvent.attendees.length;
+    // Get user details for attendees
+    const userIds = rsvps?.map(r => r.user_id) || [];
+    let attendees = [];
+    if (userIds.length > 0) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .in('id', userIds);
+      attendees = users || [];
+    }
+
+    updatedEvent.attendees = attendees;
+    updatedEvent.attendeesCount = attendees.length;
 
     res.json({ 
       message: 'Successfully cancelled RSVP',
@@ -180,13 +249,7 @@ router.get('/user', auth, async (req, res) => {
   try {
     const { data: rsvps } = await supabase
       .from('rsvps')
-      .select(`
-        event_id,
-        events!rsvps_event_id_fkey(
-          *,
-          creator:users!events_creator_id_fkey(id, name, email)
-        )
-      `)
+      .select('event_id')
       .eq('user_id', req.user.id);
 
     const eventIds = rsvps?.map(r => r.event_id) || [];
@@ -197,10 +260,7 @@ router.get('/user', auth, async (req, res) => {
 
     const { data: events } = await supabase
       .from('events')
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .in('id', eventIds)
       .gte('date', new Date().toISOString())
       .order('date', { ascending: true });
@@ -208,15 +268,38 @@ router.get('/user', auth, async (req, res) => {
     // Get attendees for each event
     const eventsWithAttendees = await Promise.all(
       (events || []).map(async (event) => {
+        // Fetch creator info
+        let creator = null;
+        if (event.creator_id) {
+          const { data: creatorData } = await supabase
+            .from('users')
+            .select('id, name, email')
+            .eq('id', event.creator_id)
+            .single();
+          creator = creatorData;
+        }
+
+        // Fetch attendees
         const { data: eventRsvps } = await supabase
           .from('rsvps')
-          .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+          .select('user_id')
           .eq('event_id', event.id);
+
+        const attendeeIds = eventRsvps?.map(r => r.user_id) || [];
+        let attendees = [];
+        if (attendeeIds.length > 0) {
+          const { data: users } = await supabase
+            .from('users')
+            .select('id, name, email')
+            .in('id', attendeeIds);
+          attendees = users || [];
+        }
 
         return {
           ...event,
-          attendees: eventRsvps?.map(r => r.users) || [],
-          attendeesCount: eventRsvps?.length || 0
+          creator,
+          attendees,
+          attendeesCount: attendees.length
         };
       })
     );
@@ -235,25 +318,45 @@ router.get('/user/created', auth, async (req, res) => {
   try {
     const { data: events } = await supabase
       .from('events')
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .eq('creator_id', req.user.id)
       .order('date', { ascending: true });
 
     // Get attendees for each event
     const eventsWithAttendees = await Promise.all(
       (events || []).map(async (event) => {
+        // Fetch creator info
+        let creator = null;
+        if (event.creator_id) {
+          const { data: creatorData } = await supabase
+            .from('users')
+            .select('id, name, email')
+            .eq('id', event.creator_id)
+            .single();
+          creator = creatorData;
+        }
+
+        // Fetch attendees
         const { data: eventRsvps } = await supabase
           .from('rsvps')
-          .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+          .select('user_id')
           .eq('event_id', event.id);
+
+        const attendeeIds = eventRsvps?.map(r => r.user_id) || [];
+        let attendees = [];
+        if (attendeeIds.length > 0) {
+          const { data: users } = await supabase
+            .from('users')
+            .select('id, name, email')
+            .in('id', attendeeIds);
+          attendees = users || [];
+        }
 
         return {
           ...event,
-          attendees: eventRsvps?.map(r => r.users) || [],
-          attendeesCount: eventRsvps?.length || 0
+          creator,
+          attendees,
+          attendeesCount: attendees.length
         };
       })
     );

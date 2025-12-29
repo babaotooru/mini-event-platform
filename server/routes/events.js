@@ -39,14 +39,25 @@ router.get('/', async (req, res) => {
           .select('*', { count: 'exact', head: true })
           .eq('event_id', event.id);
 
-        const { data: attendees } = await supabase
+        const { data: rsvps } = await supabase
           .from('rsvps')
-          .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+          .select('user_id')
           .eq('event_id', event.id);
+
+        // Get user details for attendees
+        const userIds = rsvps?.map(r => r.user_id) || [];
+        let attendees = [];
+        if (userIds.length > 0) {
+          const { data: users } = await supabase
+            .from('users')
+            .select('id, name, email')
+            .in('id', userIds);
+          attendees = users || [];
+        }
 
         return {
           ...event,
-          attendees: attendees?.map(a => a.users) || [],
+          attendees,
           attendeesCount: count || 0
         };
       })
@@ -66,10 +77,7 @@ router.get('/:id', async (req, res) => {
   try {
     const { data: event, error } = await supabase
       .from('events')
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .eq('id', req.params.id)
       .single();
 
@@ -77,14 +85,35 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Event not found' });
     }
 
+    // Fetch creator info
+    if (event?.creator_id) {
+      const { data: creator } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .eq('id', event.creator_id)
+        .single();
+      event.creator = creator;
+    }
+
     // Get attendees
     const { data: rsvps } = await supabase
       .from('rsvps')
-      .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+      .select('user_id')
       .eq('event_id', event.id);
 
-    event.attendees = rsvps?.map(r => r.users) || [];
-    event.attendeesCount = event.attendees.length;
+    // Get user details for attendees
+    const userIds = rsvps?.map(r => r.user_id) || [];
+    let attendees = [];
+    if (userIds.length > 0) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .in('id', userIds);
+      attendees = users || [];
+    }
+
+    event.attendees = attendees;
+    event.attendeesCount = attendees.length;
 
     res.json(event);
   } catch (error) {
@@ -292,22 +321,40 @@ router.put('/:id', auth, upload.single('image'), [
       .from('events')
       .update(updateData)
       .eq('id', req.params.id)
-      .select(`
-        *,
-        creator:users!events_creator_id_fkey(id, name, email)
-      `)
+      .select('*')
       .single();
 
     if (error) throw error;
 
+    // Fetch creator info
+    if (event?.creator_id) {
+      const { data: creator } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .eq('id', event.creator_id)
+        .single();
+      event.creator = creator;
+    }
+
     // Get attendees
     const { data: rsvps } = await supabase
       .from('rsvps')
-      .select('user_id, users!rsvps_user_id_fkey(id, name, email)')
+      .select('user_id')
       .eq('event_id', event.id);
 
-    event.attendees = rsvps?.map(r => r.users) || [];
-    event.attendeesCount = event.attendees.length;
+    // Get user details for attendees
+    const userIds = rsvps?.map(r => r.user_id) || [];
+    let attendees = [];
+    if (userIds.length > 0) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .in('id', userIds);
+      attendees = users || [];
+    }
+
+    event.attendees = attendees;
+    event.attendeesCount = attendees.length;
 
     res.json(event);
   } catch (error) {
