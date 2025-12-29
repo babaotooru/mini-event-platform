@@ -29,7 +29,25 @@ router.get('/', async (req, res) => {
 
     const { data: events, error } = await query;
 
-    if (error) throw error;
+    if (error) {
+      console.error('Get events error:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      
+      // Check if it's a table/column not found error
+      if (error.code === 'PGRST204' || error.code === 'NOT_FOUND' || error.message?.includes('NOT_FOUND')) {
+        console.error('⚠️  TABLE NOT FOUND: The "events" table may not exist in Supabase!');
+        console.error('⚠️  SOLUTION: Run the SQL from server/supabase_setup.sql in Supabase SQL Editor');
+        return res.status(500).json({ 
+          message: 'Database table not found. Please check Supabase setup.',
+          error: error.message,
+          code: error.code,
+          hint: 'Run server/supabase_setup.sql in Supabase SQL Editor'
+        });
+      }
+      
+      throw error;
+    }
 
     // Get attendee counts for each event
     const eventsWithAttendees = await Promise.all(
@@ -81,7 +99,27 @@ router.get('/:id', async (req, res) => {
       .eq('id', req.params.id)
       .single();
 
-    if (error || !event) {
+    if (error) {
+      console.error('Get event error:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      
+      // Check if it's a table/column not found error
+      if (error.code === 'PGRST204' || error.code === 'NOT_FOUND' || error.message?.includes('NOT_FOUND')) {
+        console.error('⚠️  TABLE NOT FOUND: The "events" table may not exist in Supabase!');
+        console.error('⚠️  SOLUTION: Run the SQL from server/supabase_setup.sql in Supabase SQL Editor');
+        return res.status(500).json({ 
+          message: 'Database table not found. Please check Supabase setup.',
+          error: error.message,
+          code: error.code,
+          hint: 'Run server/supabase_setup.sql in Supabase SQL Editor'
+        });
+      }
+      
+      return res.status(404).json({ message: 'Event not found', error: error.message });
+    }
+
+    if (!event) {
       return res.status(404).json({ message: 'Event not found' });
     }
 

@@ -29,7 +29,27 @@ router.post('/:eventId', auth, async (req, res) => {
       .eq('id', eventId)
       .single();
 
-    if (eventError || !event) {
+    if (eventError) {
+      console.error('Get event error in RSVP:', eventError);
+      console.error('Error code:', eventError.code);
+      console.error('Error message:', eventError.message);
+      
+      // Check if it's a table/column not found error
+      if (eventError.code === 'PGRST204' || eventError.code === 'NOT_FOUND' || eventError.message?.includes('NOT_FOUND')) {
+        console.error('⚠️  TABLE NOT FOUND: The "events" table may not exist in Supabase!');
+        console.error('⚠️  SOLUTION: Run the SQL from server/supabase_setup.sql in Supabase SQL Editor');
+        return res.status(500).json({ 
+          message: 'Database table not found. Please check Supabase setup.',
+          error: eventError.message,
+          code: eventError.code,
+          hint: 'Run server/supabase_setup.sql in Supabase SQL Editor'
+        });
+      }
+      
+      return res.status(404).json({ message: 'Event not found', error: eventError.message });
+    }
+
+    if (!event) {
       return res.status(404).json({ message: 'Event not found' });
     }
 
@@ -92,6 +112,18 @@ router.post('/:eventId', auth, async (req, res) => {
       // Check if it's a duplicate error
       if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
         return res.status(400).json({ message: 'You have already RSVP\'d to this event' });
+      }
+      
+      // Check if it's a table/column not found error
+      if (insertError.code === 'PGRST204' || insertError.code === 'NOT_FOUND' || insertError.message?.includes('NOT_FOUND')) {
+        console.error('⚠️  TABLE NOT FOUND: The "rsvps" table may not exist in Supabase!');
+        console.error('⚠️  SOLUTION: Run the SQL from server/supabase_setup.sql in Supabase SQL Editor');
+        return res.status(500).json({ 
+          message: 'Database table not found. Please check Supabase setup.',
+          error: insertError.message,
+          code: insertError.code,
+          hint: 'Run server/supabase_setup.sql in Supabase SQL Editor'
+        });
       }
       
       // Check if it's an RLS (Row Level Security) error
