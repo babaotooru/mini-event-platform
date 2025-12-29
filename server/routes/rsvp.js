@@ -73,23 +73,39 @@ router.post('/:eventId', auth, async (req, res) => {
     // Add RSVP (atomic operation - unique constraint prevents duplicates)
     console.log('Attempting to insert RSVP:', { user_id: userId, event_id: eventId });
     
-    // First try insert without select to see if it works
-    const { error: insertError } = await supabase
+    // Insert RSVP and return the inserted data
+    const { data: insertedRSVP, error: insertError } = await supabase
       .from('rsvps')
       .insert({
         user_id: userId,
         event_id: eventId
-      });
+      })
+      .select()
+      .single();
 
     if (insertError) {
       console.error('RSVP insert error:', insertError);
       console.error('Error details:', JSON.stringify(insertError, null, 2));
       console.error('Error code:', insertError.code);
       console.error('Error message:', insertError.message);
+      
       // Check if it's a duplicate error
       if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
         return res.status(400).json({ message: 'You have already RSVP\'d to this event' });
       }
+      
+      // Check if it's an RLS (Row Level Security) error
+      if (insertError.code === '42501' || insertError.message?.includes('permission denied') || insertError.message?.includes('RLS')) {
+        console.error('⚠️  RLS ERROR: Row Level Security is blocking RSVP inserts!');
+        console.error('⚠️  SOLUTION: Disable RLS on the "rsvps" table in Supabase Dashboard');
+        return res.status(500).json({ 
+          message: 'RSVP blocked by Row Level Security (RLS). Please disable RLS on the rsvps table in Supabase.',
+          error: insertError.message,
+          code: insertError.code,
+          hint: 'Go to Supabase Dashboard → Table Editor → rsvps table → Disable RLS'
+        });
+      }
+      
       return res.status(500).json({ 
         message: 'Server error creating RSVP',
         error: insertError.message,
@@ -99,21 +115,26 @@ router.post('/:eventId', auth, async (req, res) => {
       });
     }
     
-    console.log('RSVP inserted successfully, fetching data...');
-    
-    // Now fetch the inserted RSVP
-    const { data: rsvp, error: fetchError } = await supabase
-      .from('rsvps')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('event_id', eventId)
-      .single();
-    
-    if (fetchError) {
-      console.error('Error fetching RSVP after insert:', fetchError);
-      // Don't fail the request if insert succeeded but fetch failed
+    if (!insertedRSVP) {
+      console.error('⚠️  WARNING: Insert succeeded but no data returned');
+      // Try to fetch the RSVP to verify it was actually inserted
+      const { data: verifyRSVP, error: verifyError } = await supabase
+        .from('rsvps')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('event_id', eventId)
+        .single();
+      
+      if (verifyError || !verifyRSVP) {
+        console.error('⚠️  CRITICAL: RSVP insert reported success but RSVP not found in database!');
+        return res.status(500).json({ 
+          message: 'RSVP insert failed silently. Please check Supabase RLS settings and table permissions.',
+          error: 'Insert succeeded but data not found'
+        });
+      }
+      console.log('✅ RSVP verified in database:', verifyRSVP);
     } else {
-      console.log('RSVP created successfully:', rsvp);
+      console.log('✅ RSVP created successfully:', insertedRSVP);
     }
 
     // Fetch updated event
